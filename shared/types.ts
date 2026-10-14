@@ -1,5 +1,5 @@
 export type Source = "web" | "scribd" | "easyleadz" | "demo";
-export type SourceStatus = "waiting" | "running" | "checked" | "incomplete" | "blocked" | "not_configured";
+export type SourceStatus = "waiting" | "running" | "checked" | "incomplete" | "blocked" | "not_configured" | "skipped";
 export type Subject = { name: string; email: string; phone?: string; employer?: string; location?: string; linkedin?: string; knownUrl?: string };
 export type TimelineEvent = { at: string; title: string; detail?: string };
 export type Finding = {
@@ -11,8 +11,10 @@ export type Finding = {
   payload?: RequestPayload; approvedAt?: string; actionId?: string; runId?: string; streamingUrl?: string;
   confirmation?: string; blocker?: string; screenshotId?: string; browserSessionId?: string;
   fixtureId?: string; timeline: TimelineEvent[];
+  evidenceOrigin?: "search_result" | "page_content"; discoveredVia?: "google" | "search";
+  searchQuery?: string; searchRank?: number; searchEvidence?: string;
 };
 export type RequestPayload = { name: string; email: string; phone: string; linkedin: string; profileUrl: string; destination: string; draft: string };
 export type Breach = { name: string; date: string; description: string; fields: string[] };
-export type Scan = { id: string; subject: Subject; demo: boolean; createdAt: string; consentAt: string; status: "running" | "complete" | "partial"; checks: { source: string; status: SourceStatus; detail: string }[]; findings: Finding[]; breaches: Breach[]; hibpRunId?: string; hibpMode: "browser" | "demo_browser" | "live" | "test" | "unavailable" };
+export type Scan = { id: string; subject: Subject; demo: boolean; createdAt: string; consentAt: string; status: "running" | "complete" | "partial"; checks: { source: string; status: SourceStatus; detail: string }[]; findings: Finding[]; breaches: Breach[]; googleRunId?: string; hibpRunId?: string; hibpMode: "browser" | "demo_browser" | "live" | "test" | "unavailable" };
 export type SessionInfo = { signedIn: boolean; name?: string; configured: boolean; canRunDemo: boolean; scans: Scan[] };

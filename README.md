@@ -10,7 +10,11 @@ A TinyFish hackathon app that discovers public exposure, lets the user review ev
 4. Watch TinyFish Agent complete the controlled removal form.
 5. Recheck with a fresh TinyFish Browser; inspect the screenshot and timeline.
 
-The demo uses invented contact details. Fetch, Agent, and Browser calls are real. Personal scans require sign-in and use TinyFish Search plus Fetch. D1 stores user-scoped records; R2 stores private screenshot evidence. Secrets remain server-side.
+The demo uses invented contact details. Fetch, Agent, and Browser calls are real. Personal scans require sign-in. TinyFish Agent searches Google using the full name, including LinkedIn profiles and public exam/marksheet PDFs. Google titles and snippets are retained as candidates even when destinations require login or cannot be read. Fetch separately verifies destination content. D1 stores user-scoped records; R2 stores private screenshot evidence. Secrets remain server-side.
+
+Live app: https://veil-privacy-agent.dusky-charm-7982.chatgpt.site
+
+Google checks up to three pages of the plain-name query, with targeted LinkedIn and academic-document queries when time permits, retaining up to 40 distinct matching results. Supplemental searches cover email, phone, Scribd and EasyLeadz; destination checks are batched in groups of ten, up to 60 URLs. Search results vary by region and are not exhaustive. A search snippet is clearly distinguished from verified page content, and same-name matches require user confirmation.
 
 ## Configuration and limits
 

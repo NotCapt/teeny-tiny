@@ -3,6 +3,7 @@ import { insertRecord, mutateRecord, type AppEnv } from "./store";
 import { tinyfish, safeError } from "./tinyfish";
 import { matchContent, pageBlocker, publicUrl } from "./matching";
 import { interpretHibpResult } from "./hibp-result";
+import { googleSearch } from "./google";
 
 const stamp=()=>new Date().toISOString();
 export function sourceOf(url:string):Source {
@@ -28,9 +29,14 @@ export async function discover(env:AppEnv,owner:string,scan:Scan,origin:string,e
   const client=tinyfish(env);
   const candidates=new Map<string,{source:Source;title:string;snippet:string;fixtureId?:string}>();
   let anyFailure=false;
-  check("hibp","running","Checking historical breach exposure…");await save();
-  try {const result=await hibp(env,scan,async detail=>{check("hibp","running",detail);await save();});scan.breaches=result.breaches;check("hibp",result.status,result.detail);if(result.status!=="checked")anyFailure=true;} catch(e) {check("hibp","incomplete",safeError(e));anyFailure=true;} await save();
+  const addSearchFinding=(url:string,title:string,snippet:string,via:"google"|"search",query?:string,rank?:number)=>{
+    const evidence=`${title}\n${snippet}`;const matched=matchContent(evidence,scan.subject);
+    if(via!=="google"&&!matched.matched)return;
+    if(scan.findings.some(f=>f.sourceUrl===url))return;
+    scan.findings.push({id:crypto.randomUUID(),scanId:scan.id,source:sourceOf(url),sourceUrl:url,finalUrl:url,title,evidence:evidence.slice(0,1500),searchEvidence:evidence.slice(0,1500),exposedFields:matched.fields.length?matched.fields:["Full name"],checkedAt:stamp(),matchReason:"Name/contact match in a search result. Confirm identity; destination content is checked separately.",matchStatus:"possible",requestStatus:"none",observation:"unchecked",evidenceOrigin:"search_result",discoveredVia:via,searchQuery:query,searchRank:rank,timeline:[{at:stamp(),title:via==="google"?"Google name match discovered":"Search match discovered",detail:"Search title/snippet saved; this is not yet verified page content."}]});
+  };
   if(scan.demo) {
+    check("google","skipped","Google name searches run in personal scans. This demo uses a controlled directory.");
     const fixtureId=crypto.randomUUID();
     await insertRecord(env,fixtureId,owner,"fixture",{removed:false,createdAt:stamp(),subject:scan.subject});
     candidates.set(`${origin}/demo/exposure/${fixtureId}`,{source:"demo",title:"Synthetic contact directory",snippet:"",fixtureId});
@@ -38,39 +44,52 @@ export async function discover(env:AppEnv,owner:string,scan:Scan,origin:string,e
     await save();
   } else {
     if(scan.subject.knownUrl) { const url=publicUrl(scan.subject.knownUrl);candidates.set(url,{source:sourceOf(url),title:"Provided exposure URL",snippet:""}); }
+    check("google","running","Searching your full name on Google, including profiles and public documents.");await save();
+    try {
+      const result=await googleSearch(env,scan,async detail=>{check("google","running",detail);await save();});
+      check("google",result.status,result.detail);if(result.status!=="checked")anyFailure=true;
+      for(const r of result.results){const url=publicUrl(r.url);candidates.set(url,{source:sourceOf(url),title:r.title,snippet:r.snippet});addSearchFinding(url,r.title,r.snippet,"google",r.query,r.rank);}
+    }catch(e){check("google","incomplete",safeError(e));anyFailure=true;}
+    await save();
     const queries=[{source:"web",query:`\"${scan.subject.email}\"`,domains:undefined},{source:"web",query:`\"${scan.subject.name}\" ${scan.subject.employer||scan.subject.location||""}`,domains:undefined},{source:"scribd",query:`\"${scan.subject.name}\" ${scan.subject.email}`,domains:"scribd.com"},{source:"easyleadz",query:`\"${scan.subject.name}\" ${scan.subject.employer||""}`,domains:"easyleadz.com"}];
     if(scan.subject.phone) queries.splice(1,0,{source:"web",query:`\"${scan.subject.phone}\"`,domains:undefined});
     for(const q of queries) {
       check(q.source,"running","Searching for matching public pages…");await save();
       try {
         const found=await client.search.query({query:q.query,...(q.domains?{include_domains:q.domains}:{}),language:"en"});
-        for(const result of found.results.slice(0,5)) {try {const url=publicUrl(result.url);if(q.domains&&!new URL(url).hostname.endsWith(q.domains))continue;if(!candidates.has(url))candidates.set(url,{source:sourceOf(url),title:result.title,snippet:result.snippet});}catch{}}
+        for(const result of found.results.slice(0,10)) {try {const url=publicUrl(result.url);const host=new URL(url).hostname;if(q.domains&&host!==q.domains&&!host.endsWith(`.${q.domains}`))continue;if(!candidates.has(url)&&candidates.size<60)candidates.set(url,{source:sourceOf(url),title:result.title,snippet:result.snippet});addSearchFinding(url,result.title,result.snippet,"search",q.query);}catch{}}
         if(scan.checks.find(c=>c.source===q.source)?.status!=="incomplete")check(q.source,"checked","Search completed; examining readable page evidence.");
       }catch(e){check(q.source,"incomplete",safeError(e));anyFailure=true;}
       await save();
     }
   }
-  const urls=[...candidates.keys()].slice(0,10);
-  if(urls.length) {
+  const urls=[...candidates.keys()].slice(0,60);
+  for(let offset=0;offset<urls.length;offset+=10) {
     try {
-      const fetched=await client.fetch.getContents({urls,format:"markdown",per_url_timeout_ms:25000,ttl:0});
+      const fetched=await client.fetch.getContents({urls:urls.slice(offset,offset+10),format:"markdown",per_url_timeout_ms:25000,ttl:0});
       for(const page of fetched.results) {
         const meta=candidates.get(page.url); if(!meta)continue;
         const text=typeof page.text==="string"?page.text:"";
         const blocker=pageBlocker(text,page.final_url||page.url);
         const match=matchContent(text,scan.subject);
-        if(!match.matched)continue;
+        const existing=scan.findings.find(f=>f.sourceUrl===page.url);
+        if(blocker||!match.matched){if(existing){existing.observation=blocker?"unable_to_verify":"not_observed";existing.blocker=blocker||"The search result matched, but those identifiers were not observed in the fetched page. The search snippet may be stale or the page only partly readable.";existing.timeline.push({at:stamp(),title:"Destination checked",detail:existing.blocker});}continue;}
+        if(existing){Object.assign(existing,{finalUrl:page.final_url||page.url,evidence:match.evidence,exposedFields:match.fields,matchReason:match.reason,evidenceOrigin:"page_content",observation:"visible",blocker:undefined,checkedAt:stamp()});existing.timeline.push({at:stamp(),title:"Page evidence verified",detail:"Matching identifiers were found in the fetched destination content."});continue;}
         const finding:Finding={id:crypto.randomUUID(),scanId:scan.id,source:meta.source,sourceUrl:page.url,finalUrl:page.final_url||page.url,title:page.title||meta.title,evidence:match.evidence,exposedFields:match.fields,checkedAt:stamp(),matchReason:match.reason,matchStatus:"possible",requestStatus:"none",observation:blocker?"unable_to_verify":"visible",blocker:blocker||undefined,fixtureId:meta.fixtureId,timeline:[{at:stamp(),title:"Exposure discovered",detail:blocker||match.reason}]};
-        if(!scan.findings.some(f=>f.finalUrl===finding.finalUrl))scan.findings.push(finding);
+        finding.evidenceOrigin="page_content";if(!scan.findings.some(f=>f.finalUrl===finding.finalUrl))scan.findings.push(finding);
       }
       for(const failed of fetched.errors||[]) {
         anyFailure=true;
         const meta=candidates.get(failed.url);if(!meta)continue;
+        const existing=scan.findings.find(f=>f.sourceUrl===failed.url);if(existing){existing.observation="unable_to_verify";existing.blocker=`Destination could not be read: ${failed.error}. Google/search evidence is retained for your review.`;}
         const source=meta.source==="demo"?"web":meta.source;
         check(source,"incomplete",`Some pages could not be read: ${failed.error}.`);
       }
-    }catch(e){anyFailure=true;check("web","incomplete",safeError(e));}
+    }catch(e){anyFailure=true;check("web","incomplete",safeError(e));for(const url of urls.slice(offset,offset+10)){const f=scan.findings.find(f=>f.sourceUrl===url);if(f&&f.observation==="unchecked"){f.observation="unable_to_verify";f.blocker=safeError(e);}}}
+    await save();
   }
+  check("hibp","running","Checking the email on the HIBP website…");await save();
+  try {const result=await hibp(env,scan,async detail=>{check("hibp","running",detail);await save();});scan.breaches=result.breaches;check("hibp",result.status,result.detail);if(result.status!=="checked")anyFailure=true;} catch(e) {check("hibp","incomplete",safeError(e));anyFailure=true;} await save();
   scan.status=anyFailure?"partial":"complete";
   for(const c of scan.checks)if(c.status==="running"||c.status==="waiting") {c.status="checked";c.detail="No readable matching page found in this bounded scan.";}
   await save();
