@@ -1,0 +1,10 @@
+import assert from 'node:assert/strict';
+import {matchContent,pageBlocker,publicUrl} from '../server/matching.ts';
+const subject={name:'Alex Morgan',email:'alex.morgan@example.com',phone:'+1 202 555 0147'};
+assert.equal(matchContent('Email alex.morgan@example.com',subject).strong,true);
+assert.equal(matchContent('Email notalex.morgan@example.com',subject).matched,false);
+assert.equal(matchContent('Email alex.morgan@example.com.evil',subject).matched,false);
+assert.equal(matchContent('Alex Morgan has a public profile',subject).strong,false);
+assert.ok(pageBlocker('Please verify you are human before continuing','https://example.com'));
+for(const url of ['http://localhost','http://127.0.0.1','file:///etc/passwd','https://user:pass@example.com'])assert.throws(()=>publicUrl(url));
+console.log('PASS: exact email boundaries, name-only confidence, challenge detection, URL restrictions.');
