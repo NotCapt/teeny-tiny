@@ -14,7 +14,7 @@ The demo uses invented contact details. Fetch, Agent, and Browser calls are real
 
 ## Configuration and limits
 
-Runtime variables: `TINYFISH_API_KEY`, `PUBLIC_ORIGIN`, and optional `HIBP_API_KEY`. Real breach lookup needs a separate HIBP subscription; demo uses an official integration-test account. Scribd complaints have a manual handoff. EasyLeadz requests can require further verification. Submitted requests never automatically count as removals. Discovery is bounded and does not prove absence everywhere. Public demo runs have daily limits.
+Runtime variables: `TINYFISH_API_KEY` and `PUBLIC_ORIGIN`. TinyFish Agent enters the scan email in the public HIBP website search form and reads the visible results. No HIBP API key is needed; the demo uses a synthetic email. CAPTCHA or verification barriers are reported as blocked. Scribd complaints have a manual handoff. EasyLeadz requests can require further verification. Submitted requests never automatically count as removals. Discovery is bounded and does not prove absence everywhere. Public demo runs have daily limits.
 
 ## Build
 

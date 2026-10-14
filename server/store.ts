@@ -1,4 +1,4 @@
-export type AppEnv = { DB?: D1Database; BUCKET?: R2Bucket; TINYFISH_API_KEY?: string; HIBP_API_KEY?: string; PUBLIC_ORIGIN?: string };
+export type AppEnv = { DB?: D1Database; BUCKET?: R2Bucket; TINYFISH_API_KEY?: string; PUBLIC_ORIGIN?: string };
 export type RecordEntry<T> = { id: string; owner: string; kind: string; data: T; version: number; created_at: string };
 export async function getRecord<T>(env: AppEnv, id: string, owner?: string): Promise<RecordEntry<T> | null> {
   if (!env.DB) throw new Error("Database is not configured.");

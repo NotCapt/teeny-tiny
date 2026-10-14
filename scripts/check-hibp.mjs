@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import {interpretHibpResult} from '../server/hibp-result.ts';
+const email='alex.morgan@example.com';
+const result={outcome:'checked',checkedEmail:email,evidence:'Good news, no pwnage found for this email.',breachCount:0,breaches:[]};
+assert.equal(interpretHibpResult(result,email,true).status,'checked');
+assert.equal(interpretHibpResult(result,email,false).status,'incomplete');
+assert.equal(interpretHibpResult({...result,checkedEmail:'someone@example.com'},email,true).status,'incomplete');
+assert.equal(interpretHibpResult({...result,evidence:''},email,true).status,'incomplete');
+assert.equal(interpretHibpResult({...result,breachCount:null},email,true).status,'incomplete');
+assert.equal(interpretHibpResult({...result,outcome:'blocked',evidence:'Browser challenge',breachCount:null},email,true).status,'blocked');
+assert.equal(interpretHibpResult({...result,breachCount:2},email,true).status,'incomplete');
+console.log('PASS: verified zero, blocked, partial, wrong-email and unsuccessful-run handling.');

@@ -3,7 +3,6 @@ declare namespace Cloudflare {
     DB?: D1Database;
     BUCKET?: R2Bucket;
     TINYFISH_API_KEY?: string;
-    HIBP_API_KEY?: string;
     PUBLIC_ORIGIN?: string;
   }
 }

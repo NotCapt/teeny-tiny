@@ -14,5 +14,5 @@ export type Finding = {
 };
 export type RequestPayload = { name: string; email: string; phone: string; linkedin: string; profileUrl: string; destination: string; draft: string };
 export type Breach = { name: string; date: string; description: string; fields: string[] };
-export type Scan = { id: string; subject: Subject; demo: boolean; createdAt: string; consentAt: string; status: "running" | "complete" | "partial"; checks: { source: string; status: SourceStatus; detail: string }[]; findings: Finding[]; breaches: Breach[]; hibpMode: "live" | "test" | "unavailable" };
+export type Scan = { id: string; subject: Subject; demo: boolean; createdAt: string; consentAt: string; status: "running" | "complete" | "partial"; checks: { source: string; status: SourceStatus; detail: string }[]; findings: Finding[]; breaches: Breach[]; hibpRunId?: string; hibpMode: "browser" | "demo_browser" | "live" | "test" | "unavailable" };
 export type SessionInfo = { signedIn: boolean; name?: string; configured: boolean; canRunDemo: boolean; scans: Scan[] };
