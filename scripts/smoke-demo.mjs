@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {mkdirSync,writeFileSync,readFileSync} from 'node:fs';
 const origin=process.argv[2];
 if(!origin)throw new Error('Pass the deployed origin. This test uses one synthetic TinyFish demo run.');
 let cookie='';
@@ -17,6 +18,7 @@ const session=await call('/api/session');assert.equal(session.configured,true);a
 const denied=await fetch(origin+'/api/scans',{method:'POST',headers:{'content-type':'application/json',cookie},body:JSON.stringify({demo:false,consent:true,subject:{name:'Alex Morgan',email:'alex.morgan@example.com'}})});assert.equal(denied.status,401);
 let scan=await call('/api/scans',{demo:true,consent:true});assert.ok(scan.findings.length,'TinyFish Fetch must discover the synthetic listing');
 const id=scan.findings[0].id,path=`/api/cases/${scan.id}/${id}`;
+mkdirSync('outputs',{recursive:true});writeFileSync('outputs/smoke-session.json',JSON.stringify({origin,cookie,path,scanId:scan.id}));
 const other=await fetch(origin+`/api/scans/${scan.id}`);assert.equal(other.status,404,'Another visitor cannot read this case');
 const unauthorized=await fetch(origin+path+'/submit',{method:'POST',headers:{'content-type':'application/json',cookie},body:'{}'});assert.equal(unauthorized.status,400,'Submission requires review and approval');
 scan=await call(path+'/confirm',{confirmed:true});scan=await call(path+'/prepare',{});

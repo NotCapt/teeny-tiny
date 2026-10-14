@@ -31,8 +31,8 @@ export async function verify(env:AppEnv,owner:string,scanId:string,caseId:string
     const cdp=new CDP(socket);
     const targets=await cdp.send("Target.getTargets",{},false);
     const pageTarget=targets.targetInfos.find((t:{type:string})=>t.type==="page");
-    if(!pageTarget)throw new Error("No browser page was available.");
-    const attached=await cdp.send("Target.attachToTarget",{targetId:pageTarget.targetId,flatten:true},false);cdp.sessionId=attached.sessionId;
+    const targetId=pageTarget?.targetId||(await cdp.send("Target.createTarget",{url:"about:blank"},false)).targetId;
+    const attached=await cdp.send("Target.attachToTarget",{targetId,flatten:true},false);cdp.sessionId=attached.sessionId;
     await cdp.send("Page.enable");
     const nav=await cdp.send("Page.navigate",{url});if(nav.errorText)throw new Error("The target page could not be loaded.");
     let page:{url:string;title:string;text:string;ready:string}|null=null;
