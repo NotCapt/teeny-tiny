@@ -4,6 +4,7 @@ import { tinyfish, safeError } from "./tinyfish";
 import { matchContent, pageBlocker, publicUrl } from "./matching";
 import { interpretHibpResult } from "./hibp-result";
 import { googleSearch } from "./google";
+import { isGoogleRedirect } from "./google-results";
 
 const stamp=()=>new Date().toISOString();
 export function sourceOf(url:string):Source {
@@ -34,6 +35,7 @@ export async function discover(env:AppEnv,owner:string,scan:Scan,origin:string,e
     if(via!=="google"&&!matched.matched)return;
     if(scan.findings.some(f=>f.sourceUrl===url))return;
     scan.findings.push({id:crypto.randomUUID(),scanId:scan.id,source:sourceOf(url),sourceUrl:url,finalUrl:url,title,evidence:evidence.slice(0,1500),searchEvidence:evidence.slice(0,1500),exposedFields:matched.fields.length?matched.fields:["Full name"],checkedAt:stamp(),matchReason:"Name/contact match in a search result. Confirm identity; destination content is checked separately.",matchStatus:"possible",requestStatus:"none",observation:"unchecked",evidenceOrigin:"search_result",discoveredVia:via,searchQuery:query,searchRank:rank,timeline:[{at:stamp(),title:via==="google"?"Google name match discovered":"Search match discovered",detail:"Search title/snippet saved; this is not yet verified page content."}]});
+    scan.findings[scan.findings.length-1].destinationPending=isGoogleRedirect(url);
   };
   if(scan.demo) {
     check("google","skipped","Google name searches run in personal scans. This demo uses a controlled directory.");
@@ -53,6 +55,7 @@ export async function discover(env:AppEnv,owner:string,scan:Scan,origin:string,e
     await save();
     const queries=[{source:"web",query:`\"${scan.subject.email}\"`,domains:undefined},{source:"web",query:`\"${scan.subject.name}\" ${scan.subject.employer||scan.subject.location||""}`,domains:undefined},{source:"scribd",query:`\"${scan.subject.name}\" ${scan.subject.email}`,domains:"scribd.com"},{source:"easyleadz",query:`\"${scan.subject.name}\" ${scan.subject.employer||""}`,domains:"easyleadz.com"}];
     if(scan.subject.phone) queries.splice(1,0,{source:"web",query:`\"${scan.subject.phone}\"`,domains:undefined});
+    queries.push({source:"web",query:`"${scan.subject.name}" (exam OR marksheet OR university OR result)`,domains:undefined},{source:"web",query:`"${scan.subject.name}"`,domains:"linkedin.com"});
     for(const q of queries) {
       check(q.source,"running","Searching for matching public pages…");await save();
       try {
@@ -73,6 +76,7 @@ export async function discover(env:AppEnv,owner:string,scan:Scan,origin:string,e
         const blocker=pageBlocker(text,page.final_url||page.url);
         const match=matchContent(text,scan.subject);
         const existing=scan.findings.find(f=>f.sourceUrl===page.url);
+        if(existing?.destinationPending){const resolved=publicUrl(page.final_url||page.url);if(isGoogleRedirect(resolved)){existing.observation="unable_to_verify";existing.blocker="Google's redirect could not be resolved. Open the search result to inspect the destination.";continue;}existing.sourceUrl=resolved;existing.finalUrl=resolved;existing.source=sourceOf(resolved);existing.destinationPending=false;}
         if(blocker||!match.matched){if(existing){existing.observation=blocker?"unable_to_verify":"not_observed";existing.blocker=blocker||"The search result matched, but those identifiers were not observed in the fetched page. The search snippet may be stale or the page only partly readable.";existing.timeline.push({at:stamp(),title:"Destination checked",detail:existing.blocker});}continue;}
         if(existing){Object.assign(existing,{finalUrl:page.final_url||page.url,evidence:match.evidence,exposedFields:match.fields,matchReason:match.reason,evidenceOrigin:"page_content",observation:"visible",blocker:undefined,checkedAt:stamp()});existing.timeline.push({at:stamp(),title:"Page evidence verified",detail:"Matching identifiers were found in the fetched destination content."});continue;}
         const finding:Finding={id:crypto.randomUUID(),scanId:scan.id,source:meta.source,sourceUrl:page.url,finalUrl:page.final_url||page.url,title:page.title||meta.title,evidence:match.evidence,exposedFields:match.fields,checkedAt:stamp(),matchReason:match.reason,matchStatus:"possible",requestStatus:"none",observation:blocker?"unable_to_verify":"visible",blocker:blocker||undefined,fixtureId:meta.fixtureId,timeline:[{at:stamp(),title:"Exposure discovered",detail:blocker||match.reason}]};

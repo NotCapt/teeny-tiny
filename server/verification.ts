@@ -2,6 +2,7 @@ import type { Finding, Scan } from "../shared/types";
 import { getRecord,mutateRecord,type AppEnv } from "./store";
 import { tinyfish,closeSession,safeError } from "./tinyfish";
 import { matchContent,pageBlocker,publicUrl } from "./matching";
+import { isGoogleRedirect } from "./google-results";
 
 class CDP {
   socket:WebSocket; id=0; sessionId?:string;
@@ -45,6 +46,7 @@ export async function verify(env:AppEnv,owner:string,scanId:string,caseId:string
     }
     if(!page||page.url==="about:blank"||page.ready!=="complete")throw new Error("The page did not finish loading.");
     finalUrl=publicUrl(page.url);
+    if(isGoogleRedirect(finalUrl))throw new Error("Google's redirect did not resolve to the destination page.");
     const blocker=pageBlocker(page.text,finalUrl);
     if(blocker)throw new Error(blocker);
     if(/^(404|410)|page not found|document (?:has been )?removed|content (?:has been )?removed/i.test(`${page.title} ${page.text.slice(0,300)}`)){observation="unavailable";detail="The original page is unavailable under the conditions checked.";}
@@ -55,5 +57,5 @@ export async function verify(env:AppEnv,owner:string,scanId:string,caseId:string
     socket?.close();
     if(remoteId)try {await closeSession(env,remoteId);remoteId=undefined;}catch(e){detail+=` ${safeError(e)}`;}
   }
-  return mutateRecord<Scan>(env,scanId,owner,s=>{const c=s.findings.find(x=>x.id===caseId)!;c.observation=observation;c.checkedAt=new Date().toISOString();c.finalUrl=finalUrl;c.browserSessionId=remoteId;c.screenshotId=screenshotId||c.screenshotId;c.blocker=observation==="unable_to_verify"||remoteId?detail:undefined;c.timeline.push({at:c.checkedAt,title:observation==="visible"?"Information still visible":observation==="not_observed"?"Information not observed":observation==="unavailable"?"Page unavailable":"Unable to verify",detail});});
+  return mutateRecord<Scan>(env,scanId,owner,s=>{const c=s.findings.find(x=>x.id===caseId)!;if(c.destinationPending&&finalUrl&&!isGoogleRedirect(finalUrl)&&observation!=="unable_to_verify"){c.sourceUrl=finalUrl;c.destinationPending=false;}c.observation=observation;c.checkedAt=new Date().toISOString();c.finalUrl=finalUrl;c.browserSessionId=remoteId;c.screenshotId=screenshotId||c.screenshotId;c.blocker=observation==="unable_to_verify"||remoteId?detail:undefined;c.timeline.push({at:c.checkedAt,title:observation==="visible"?"Information still visible":observation==="not_observed"?"Information not observed":observation==="unavailable"?"Page unavailable":"Unable to verify",detail});});
 }

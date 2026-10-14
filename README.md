@@ -14,7 +14,7 @@ The demo uses invented contact details. Fetch, Agent, and Browser calls are real
 
 Live app: https://veil-privacy-agent.dusky-charm-7982.chatgpt.site
 
-Google checks up to three pages of the plain-name query, with targeted LinkedIn and academic-document queries when time permits, retaining up to 40 distinct matching results. Supplemental searches cover email, phone, Scribd and EasyLeadz; destination checks are batched in groups of ten, up to 60 URLs. Search results vary by region and are not exhaustive. A search snippet is clearly distinguished from verified page content, and same-name matches require user confirmation.
+Google preserves the exact name spelling using a quoted query, then prioritizes academic-document and LinkedIn queries before additional pagination. It retains up to 40 distinct matching results, including Google redirect links while their destinations are resolved. Supplemental searches cover email, phone, Scribd and EasyLeadz; destination checks are batched in groups of ten, up to 60 URLs. Search results vary by region and are not exhaustive. A search snippet is clearly distinguished from verified page content, and same-name matches require user confirmation.
 
 ## Configuration and limits
 

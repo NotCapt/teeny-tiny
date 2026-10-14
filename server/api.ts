@@ -70,6 +70,7 @@ export async function handleApi(request:Request,env:AppEnv):Promise<Response|nul
     const input=await request.json() as Record<string,unknown>;
     if(action==="confirm") {if(finding.requestStatus==="submitting")throw new Error("An action is already running.");return json(await mutateRecord<Scan>(env,scanId,owner,s=>{const f=s.findings.find(f=>f.id===caseId)!;f.matchStatus=input.confirmed===true?"confirmed":"dismissed";f.timeline.push({at:new Date().toISOString(),title:input.confirmed===true?"Match confirmed by you":"Finding dismissed"});}),200,headers);}
     if(action==="prepare") {
+      if(finding.destinationPending)throw new Error("Resolve the destination first: open this Google result, then use Check again or scan its direct URL.");
       if(finding.matchStatus!=="confirmed")throw new Error("Confirm the finding first.");
       if(finding.actionId)throw new Error("A submission already exists. Check its outcome before preparing another.");
       return json(await mutateRecord<Scan>(env,scanId,owner,s=>{const f=s.findings.find(f=>f.id===caseId)!;f.payload=prepare(s,f,env.PUBLIC_ORIGIN||url.origin);f.requestStatus="prepared";f.timeline.push({at:new Date().toISOString(),title:"Request prepared",detail:"Review the destination and fields before approving."});}),200,headers);

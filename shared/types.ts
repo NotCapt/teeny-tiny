@@ -13,6 +13,7 @@ export type Finding = {
   fixtureId?: string; timeline: TimelineEvent[];
   evidenceOrigin?: "search_result" | "page_content"; discoveredVia?: "google" | "search";
   searchQuery?: string; searchRank?: number; searchEvidence?: string;
+  destinationPending?: boolean;
 };
 export type RequestPayload = { name: string; email: string; phone: string; linkedin: string; profileUrl: string; destination: string; draft: string };
 export type Breach = { name: string; date: string; description: string; fields: string[] };

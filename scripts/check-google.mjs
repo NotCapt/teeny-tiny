@@ -6,4 +6,7 @@ assert.equal(result.results.length,2);assert.equal(result.status,'checked');asse
 assert.equal(interpretGoogleResults({outcome:'blocked',pagesChecked:1,note:'Challenge',results:rows},'Faaiz Hussain',true).results.length,2);
 assert.equal(interpretGoogleResults(null,'Faaiz Hussain',true).status,'incomplete');
 assert.ok(googleAgentRequest('Faaiz Hussain').url.includes('Faaiz%20Hussain'));
+const redirect=interpretGoogleResults({outcome:'partial',pagesChecked:1,note:'Google redirect',results:[{...rows[0],url:'https://www.google.com/goto?url=CAESopaque'}]},'Faaiz Hussain',true);
+assert.equal(redirect.results.length,1);assert.equal(redirect.results[0].destinationPending,true);
+assert.ok(googleAgentRequest('Faaiz Hussain').url.includes('%22Faaiz%20Hussain%22'));
 console.log('PASS: LinkedIn and PDF candidates retained, tracking duplicates removed, unrelated names and unsafe URLs rejected, partial evidence preserved.');
