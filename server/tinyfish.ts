@@ -1,8 +1,8 @@
 import { TinyFish } from "@tiny-fish/sdk";
 import type { AppEnv } from "./store";
-export function tinyfish(env:AppEnv) {
+export function tinyfish(env:AppEnv,timeout=150000) {
   if(!env.TINYFISH_API_KEY) throw new Error("TinyFish is not configured on this deployment.");
-  return new TinyFish({apiKey:env.TINYFISH_API_KEY,timeout:150000,maxRetries:0});
+  return new TinyFish({apiKey:env.TINYFISH_API_KEY,timeout,maxRetries:0});
 }
 export async function cancelRun(env:AppEnv,id:string) {
   const response=await fetch(`https://agent.tinyfish.ai/v1/runs/${encodeURIComponent(id)}/cancel`,{method:"POST",headers:{"X-API-Key":env.TINYFISH_API_KEY!}});
