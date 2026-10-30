@@ -1,4 +1,4 @@
-import type { Scan, Finding, Source, Breach } from "../shared/types";
+import type { Scan, Finding, Source } from "../shared/types";
 import { insertRecord, mutateRecord, type AppEnv } from "./store";
 import { tinyfish, safeError } from "./tinyfish";
 import { matchContent, pageBlocker, publicUrl } from "./matching";
@@ -7,6 +7,7 @@ import { googleSearch } from "./google";
 import { isGoogleRedirect } from "./google-results";
 
 const stamp=()=>new Date().toISOString();
+const USER_FIELDS=["matchStatus","requestStatus","payload","approvedAt","actionId","runId","streamingUrl","confirmation","screenshotId","browserSessionId"] as const satisfies readonly (keyof Finding)[];
 export function sourceOf(url:string):Source {
   const host=new URL(url).hostname;
   return /(^|\.)scribd\.com$/.test(host)?"scribd":/(^|\.)easyleadz\.com$/.test(host)?"easyleadz":"web";
@@ -25,7 +26,9 @@ export async function hibp(env:AppEnv,scan:Scan,progress:(detail:string)=>Promis
   return interpretHibpResult(result,email,completed);
 }
 export async function discover(env:AppEnv,owner:string,scan:Scan,origin:string,emit:(s:Scan)=>void) {
-  const save=async()=>{await mutateRecord<Scan>(env,scan.id,owner,s=>Object.assign(s,scan));emit(scan);};
+  // Users can review findings while discovery is still running. Carry their decisions and
+  // case activity into the in-memory scan so a progress save never overwrites them.
+  const save=async()=>{await mutateRecord<Scan>(env,scan.id,owner,s=>{for(const stored of s.findings){const f=scan.findings.find(x=>x.id===stored.id);if(!f)continue;for(const key of USER_FIELDS)(f as Record<string,unknown>)[key]=stored[key];const seen=new Set(f.timeline.map(e=>`${e.at}|${e.title}`));f.timeline.push(...stored.timeline.filter(e=>!seen.has(`${e.at}|${e.title}`)));f.timeline.sort((a,b)=>a.at.localeCompare(b.at));}Object.assign(s,scan);});emit(scan);};
   const check=(source:string,status:Scan["checks"][number]["status"],detail:string)=>{const item=scan.checks.find(c=>c.source===source);if(item)Object.assign(item,{status,detail});};
   const client=tinyfish(env);
   const candidates=new Map<string,{source:Source;title:string;snippet:string;fixtureId?:string}>();

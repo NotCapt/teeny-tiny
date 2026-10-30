@@ -21,6 +21,7 @@ import {
   LoaderCircle,
   LockKeyhole,
   Plus,
+  RotateCcw,
   Search,
   Shield,
   ShieldCheck,
@@ -112,6 +113,37 @@ function date(value: string) {
     minute: "2-digit",
   });
 }
+// Error pages from proxies or a cold worker are not always JSON.
+async function readJson<T>(response: Response): Promise<T & { error?: string }> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {
+      error: response.ok
+        ? "The server returned an unreadable response."
+        : `The service is unavailable (${response.status}). Please try again.`,
+    } as T & { error?: string };
+  }
+}
+const REVIEW_ORDER: Record<Finding["matchStatus"], number> = {
+  possible: 0,
+  confirmed: 1,
+  dismissed: 2,
+};
+function caseSteps(f: Finding) {
+  return [
+    { label: "Found", done: true },
+    { label: "Confirmed", done: f.matchStatus === "confirmed" },
+    { label: "Requested", done: f.requestStatus === "submitted" },
+    {
+      label: "Verified gone",
+      done:
+        ["not_observed", "unavailable"].includes(f.observation) &&
+        !!f.screenshotId,
+    },
+  ];
+}
 function Badge({ value }: { value: string }) {
   return (
     <span className={`badge ${value}`}>
@@ -123,7 +155,9 @@ function Badge({ value }: { value: string }) {
 function useDialog(onClose: () => void) {
   const ref = useRef<HTMLElement>(null),
     close = useRef(onClose);
-  close.current = onClose;
+  useEffect(() => {
+    close.current = onClose;
+  });
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null,
       overflow = document.body.style.overflow;
@@ -227,8 +261,8 @@ export default function VeilApp() {
   useEffect(() => {
     void fetch("/api/session")
       .then(async (r) => {
-        const d = (await r.json()) as SessionInfo & Scan & { error?: string };
-        if (!r.ok) throw new Error(d.error);
+        const d = await readJson<SessionInfo>(r);
+        if (!r.ok || d.error) throw new Error(d.error);
         setSession(d);
         setScans(d.scans);
         setScanId(d.scans[0]?.id);
@@ -243,18 +277,37 @@ export default function VeilApp() {
   const active =
     scan?.status === "running" ||
     scan?.findings.some((f) => f.requestStatus === "submitting");
+  // Poll only when work is happening on the server that this tab is not streaming.
+  const pollId = active && !busy ? scan?.id : undefined;
   useEffect(() => {
-    if (!scan || busy || !active) return;
-    const id = scan.id;
+    if (!pollId) return;
     const t = setInterval(() => {
-      void fetch(`/api/scans/${id}`)
+      void fetch(`/api/scans/${pollId}`)
         .then(async (r) => {
           if (r.ok) updateScan(await r.json());
         })
         .catch(() => {});
     }, 3000);
     return () => clearInterval(t);
-  }, [scan?.id, busy, active]);
+  }, [pollId]);
+  const searchRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (
+        event.key !== "/" ||
+        event.metaKey ||
+        event.ctrlKey ||
+        target?.closest("input,textarea,select,[contenteditable],[role=dialog]") ||
+        !searchRef.current
+      )
+        return;
+      event.preventDefault();
+      searchRef.current.focus();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []);
   async function streamed(url: string, body: unknown) {
     const response = await fetch(url, {
       method: "POST",
@@ -262,30 +315,35 @@ export default function VeilApp() {
       body: JSON.stringify(body),
     });
     if (!response.ok) {
-      const d = (await response.json()) as { error?: string };
+      const d = await readJson(response);
       throw new Error(d.error || "The operation could not start.");
     }
     if (!response.headers.get("content-type")?.includes("text/event-stream")) {
-      updateScan(await response.json());
+      const d = await readJson<Scan>(response);
+      if (d.error) throw new Error(d.error);
+      updateScan(d);
       return;
     }
     const reader = response.body!.getReader(),
       decoder = new TextDecoder();
     let buffer = "";
+    const handle = (msg: string) => {
+      const line = msg.split("\n").find((l) => l.startsWith("data: "));
+      if (!line) return;
+      const d = JSON.parse(line.slice(6));
+      if (d.error) throw new Error(d.error);
+      updateScan(d);
+    };
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
       const messages = buffer.split("\n\n");
       buffer = messages.pop() || "";
-      for (const msg of messages) {
-        const line = msg.split("\n").find((l) => l.startsWith("data: "));
-        if (!line) continue;
-        const d = JSON.parse(line.slice(6));
-        if (d.error) throw new Error(d.error);
-        updateScan(d);
-      }
+      messages.forEach(handle);
     }
+    buffer += decoder.decode();
+    if (buffer.trim()) handle(buffer);
   }
   async function startScan(demo: boolean) {
     setError("");
@@ -322,11 +380,12 @@ export default function VeilApp() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(data),
         });
-        const d = (await r.json()) as SessionInfo & Scan & { error?: string };
-        if (!r.ok) throw new Error(d.error);
+        const d = await readJson<Scan>(r);
+        if (!r.ok || d.error) throw new Error(d.error);
         updateScan(d);
       }
       if (kind === "verify") setToast("Fresh browser observation saved.");
+      if (kind === "prepare") setToast("Request prepared. Review it below.");
     } catch (e) {
       setError(
         e instanceof Error ? e.message : "This action could not finish.",
@@ -345,8 +404,8 @@ export default function VeilApp() {
     setBusy("clear");
     try {
       const r = await fetch("/api/session/data", { method: "DELETE" });
-      const d = (await r.json()) as SessionInfo & Scan & { error?: string };
-      if (!r.ok) throw new Error(d.error);
+      const d = await readJson(r);
+      if (!r.ok || d.error) throw new Error(d.error);
       setScans([]);
       setScanId(undefined);
       setSelectedId(undefined);
@@ -366,12 +425,17 @@ export default function VeilApp() {
     a.href = url;
     a.download = `veil-report-${scan.id.slice(0, 8)}.json`;
     a.click();
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
   const findings = scan?.findings || [],
     isWorking = !!busy || !!active;
   const hasFilters =
     filter !== "all" || !!query.trim() || reviewFilter !== "all";
+  // An error belongs to the case that raised it; don't carry it into the next one.
+  function openCase(id: string | undefined) {
+    setSelectedId(id);
+    setError("");
+  }
   function navigate(next: string) {
     setSection(next);
     setSelectedId(undefined);
@@ -379,6 +443,10 @@ export default function VeilApp() {
     setQuery("");
     setReviewFilter("all");
   }
+  const reviewCount = findings.filter((f) => f.matchStatus !== "dismissed").length;
+  const finishedChecks =
+    scan?.checks.filter((c) => !["waiting", "running"].includes(c.status))
+      .length || 0;
   const displayed = findings.filter(
     (f) =>
       (filter === "all" ||
@@ -391,7 +459,7 @@ export default function VeilApp() {
         .join(" ")
         .toLowerCase()
         .includes(query.trim().toLowerCase()),
-  );
+  ).sort((a, b) => REVIEW_ORDER[a.matchStatus] - REVIEW_ORDER[b.matchStatus]);
   const activities = findings
     .flatMap((f) =>
       f.timeline.map((event) => ({ ...event, caseId: f.id, source: f.source })),
@@ -403,14 +471,18 @@ export default function VeilApp() {
         Skip to workspace
       </a>
       <aside className="sidebar">
-        <a className="brand" href="/" aria-label="Veil home">
+        <button
+          className="brand"
+          onClick={() => navigate("Overview")}
+          aria-label="Veil overview"
+        >
           <span className="brand-mark">
             <Fingerprint size={29} />
           </span>
           <span>
             veil<span className="brand-period">.</span>
           </span>
-        </a>
+        </button>
         <div className="workspace-label">YOUR PRIVACY WORKSPACE</div>
         <nav aria-label="Workspace">
           {[
@@ -428,8 +500,8 @@ export default function VeilApp() {
             >
               <item.icon size={19} />
               <span>{item.name}</span>
-              {item.name === "My exposures" && findings.length > 0 && (
-                <span className="nav-count">{findings.length}</span>
+              {item.name === "My exposures" && reviewCount > 0 && (
+                <span className="nav-count">{reviewCount}</span>
               )}
             </button>
           ))}
@@ -643,6 +715,30 @@ export default function VeilApp() {
                 )}
                 <Badge value={scan.status} />
               </div>
+              {scan.status === "running" && (
+                <div
+                  className="scan-progress"
+                  role="progressbar"
+                  aria-label="Scan progress"
+                  aria-valuemin={0}
+                  aria-valuemax={scan.checks.length}
+                  aria-valuenow={finishedChecks}
+                >
+                  <div className="scan-progress-bar">
+                    <span
+                      style={{
+                        width: `${Math.max(6, (finishedChecks / Math.max(1, scan.checks.length)) * 100)}%`,
+                      }}
+                    />
+                  </div>
+                  <small>
+                    {finishedChecks} of {scan.checks.length} checks finished
+                    {" · "}
+                    {scan.checks.find((c) => c.status === "running")?.detail ||
+                      "Preparing the next check…"}
+                  </small>
+                </div>
+              )}
               {scan.status !== "running" && (
                 <p>
                   {scan.status === "partial"
@@ -768,11 +864,14 @@ export default function VeilApp() {
                   <label className="result-search">
                     <Search size={16} />
                     <input
+                      ref={searchRef}
                       aria-label="Search evidence"
+                      aria-keyshortcuts="/"
                       placeholder="Search titles, URLs or evidence"
                       value={query}
                       onChange={(e) => setQuery(e.target.value)}
                     />
+                    {!query && <kbd className="key-hint">/</kbd>}
                     {query && (
                       <button
                         aria-label="Clear search"
@@ -807,14 +906,15 @@ export default function VeilApp() {
                   </div>
                   {displayed.map((f) => (
                     <button
-                      className="finding-row"
+                      className={`finding-row ${f.matchStatus === "dismissed" ? "dismissed" : ""}`}
                       key={f.id}
-                      onClick={() => setSelectedId(f.id)}
+                      onClick={() => openCase(f.id)}
                     >
                       <div className="finding-main">
-                        <span className={`finding-icon ${f.source}`}>
-                          <FileText size={20} />
-                        </span>
+                        <SourceIcon
+                          className={`finding-icon ${f.source}`}
+                          finding={f}
+                        />
                         <div>
                           <strong>{f.title}</strong>
                           <p>
@@ -931,7 +1031,7 @@ export default function VeilApp() {
                   <button
                     className="activity-row"
                     key={`${event.at}-${i}`}
-                    onClick={() => setSelectedId(event.caseId)}
+                    onClick={() => openCase(event.caseId)}
                   >
                     <span className="timeline-dot">
                       <Check size={13} />
@@ -958,7 +1058,8 @@ export default function VeilApp() {
               )}
             </section>
           )}
-          {!!scan?.breaches.length && (
+          {!!scan?.breaches.length &&
+            (section === "Overview" || section === "My exposures") && (
             <section className="breach-section">
               <div className="section-heading">
                 <div>
@@ -1211,12 +1312,26 @@ export default function VeilApp() {
             website using the synthetic demo email. No request is sent to a real
             broker. Agent and Browser actions use metered TinyFish services.
           </p>
+          {session && !session.configured && (
+            <p className="case-blocker" role="note">
+              This deployment has no TinyFish API key, so the demo cannot run.
+              Set TINYFISH_API_KEY on the server to enable it.
+            </p>
+          )}
           <button
             className="button primary full-width"
             onClick={() => void startScan(true)}
             disabled={isWorking || !session?.configured}
           >
-            Start live demo <ArrowRight size={16} />
+            {isWorking ? (
+              <>
+                <LoaderCircle className="spin" size={16} /> A scan is running…
+              </>
+            ) : (
+              <>
+                Start live demo <ArrowRight size={16} />
+              </>
+            )}
           </button>
         </Modal>
       )}
@@ -1269,16 +1384,35 @@ export default function VeilApp() {
       )}
       {selected && scan && (
         <CasePanel
+          key={`${selected.id}:${selected.requestStatus}`}
           finding={selected}
           scan={scan}
           busy={busy}
           error={error}
           action={action}
-          onClose={() => setSelectedId(undefined)}
+          onClose={() => openCase(undefined)}
           notify={setToast}
         />
       )}
     </div>
+  );
+}
+
+function SourceIcon({
+  finding,
+  className,
+}: {
+  finding: Finding;
+  className: string;
+}) {
+  const Icon =
+    finding.discoveredVia === "google" && finding.source === "web"
+      ? Search
+      : SOURCES[finding.source].icon;
+  return (
+    <span className={className} aria-hidden="true">
+      <Icon size={20} />
+    </span>
   );
 }
 
@@ -1303,12 +1437,11 @@ function CasePanel({
       f.payload || null,
     ),
     [approved, setApproved] = useState(false);
-  useEffect(() => {
-    setPayload(f.payload || null);
-    setApproved(false);
-  }, [f.id, f.requestStatus]);
   const dialogRef = useDialog(onClose);
   const automated = ["demo", "easyleadz"].includes(f.source);
+  const steps = caseSteps(f),
+    next = steps.findIndex((item) => !item.done);
+  const canRetry = ["failed", "action_required"].includes(f.requestStatus);
   return (
     <div className="drawer-backdrop" onClick={onClose}>
       <aside
@@ -1332,10 +1465,10 @@ function CasePanel({
         </div>
         <div className="drawer-content">
           <div className="case-source">
-            <span className={`source-logo ${f.source}`}>
-              <FileText size={20} />
-            </span>
-            {SOURCES[f.source].name}
+            <SourceIcon className={`source-logo ${f.source}`} finding={f} />
+            {f.discoveredVia === "google"
+              ? `Google → ${SOURCES[f.source].name}`
+              : SOURCES[f.source].name}
             {f.source === "demo" && (
               <span className="tiny-tag">SYNTHETIC FIXTURE</span>
             )}
@@ -1350,6 +1483,20 @@ function CasePanel({
             {f.destinationPending ? "Open Google result" : "Open source page"}{" "}
             <ExternalLink size={13} />
           </a>
+          {f.matchStatus !== "dismissed" && (
+            <ol className="case-progress" aria-label="Case progress">
+              {steps.map((item, i) => (
+                <li
+                  key={item.label}
+                  className={item.done ? "done" : i === next ? "next" : ""}
+                  aria-current={i === next ? "step" : undefined}
+                >
+                  <span>{item.done ? <Check size={11} /> : i + 1}</span>
+                  {item.label}
+                </li>
+              ))}
+            </ol>
+          )}
           <div className="case-statuses">
             <Badge value={f.matchStatus} />
             <Badge value={f.observation} />
@@ -1417,6 +1564,25 @@ function CasePanel({
               </div>
             </div>
           )}
+          {f.matchStatus === "dismissed" && (
+            <div className="confirm-box muted">
+              <strong>You dismissed this finding.</strong>
+              <p>
+                It stays in the evidence trail. Reopen it if you change your
+                mind.
+              </p>
+              <div>
+                <button
+                  className="button secondary"
+                  disabled={!!busy}
+                  onClick={() => void action("confirm", { reset: true })}
+                >
+                  <RotateCcw size={15} />
+                  Reopen for review
+                </button>
+              </div>
+            </div>
+          )}
           {f.matchStatus === "confirmed" && (
             <>
               <div className="case-action-row">
@@ -1432,14 +1598,25 @@ function CasePanel({
                   )}
                   Check again
                 </button>
-                {f.requestStatus === "none" && (
+                {(f.requestStatus === "none" || canRetry) && (
                   <button
                     className="button primary"
-                    disabled={!!busy}
+                    disabled={!!busy || f.destinationPending}
+                    title={
+                      f.destinationPending
+                        ? "Open the Google result and use Check again to resolve its destination first."
+                        : undefined
+                    }
                     onClick={() => void action("prepare")}
                   >
-                    <FileText size={15} />
-                    Prepare request
+                    {busy === "prepare" ? (
+                      <LoaderCircle className="spin" size={15} />
+                    ) : canRetry ? (
+                      <RotateCcw size={15} />
+                    ) : (
+                      <FileText size={15} />
+                    )}
+                    {canRetry ? "Prepare again" : "Prepare request"}
                   </button>
                 )}
               </div>
@@ -1545,7 +1722,11 @@ function CasePanel({
                           void action("submit", { approved: true, payload })
                         }
                       >
-                        <Zap size={16} />
+                        {busy === "submit" ? (
+                          <LoaderCircle className="spin" size={16} />
+                        ) : (
+                          <Zap size={16} />
+                        )}
                         Approve and submit
                       </button>
                     </>
@@ -1602,6 +1783,16 @@ function CasePanel({
                   <p>{f.blocker}</p>
                 </div>
               )}
+              {f.requestStatus === "action_required" && f.payload && (
+                <a
+                  className="button secondary"
+                  href={f.payload.destination}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Finish this request yourself <ExternalLink size={14} />
+                </a>
+              )}
               {f.runId &&
                 ["unknown", "action_required", "submitting"].includes(
                   f.requestStatus,
@@ -1632,6 +1823,8 @@ function CasePanel({
                     target="_blank"
                     rel="noreferrer"
                   >
+                    {/* Private per-user evidence served with no-store; next/image would cache it. */}
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img
                       src={`/api/cases/${scan.id}/${f.id}/screenshot`}
                       alt="Screenshot captured during the latest verification"

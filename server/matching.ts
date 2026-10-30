@@ -24,7 +24,8 @@ export function pageBlocker(text:string,url:string) {
   return null;
 }
 export function publicUrl(value:string) {
-  const u=new URL(value); const h=u.hostname.toLowerCase();
+  let u:URL; try { u=new URL(value.trim()); } catch { throw new Error("Use a full public website URL, starting with https://."); }
+  const h=u.hostname.toLowerCase();
   if(!["http:","https:"].includes(u.protocol)||u.username||u.password||h==="localhost"||h.endsWith(".local")||h.endsWith(".internal")||h.includes(":")||/^\d+(\.\d+){3}$/.test(h)||!h.includes(".")) throw new Error("Use a public website URL without credentials.");
   return u.toString();
 }

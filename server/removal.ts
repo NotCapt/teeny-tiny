@@ -32,7 +32,8 @@ export async function runRemoval(env:AppEnv,owner:string,scanId:string,caseId:st
     }
     if(!sawComplete)throw new Error("The stream ended without confirmation. Check the existing run before retrying.");
   }catch(e) {
-    await update(f=>{f.requestStatus="unknown";f.streamingUrl=undefined;f.blocker=safeError(e);f.timeline.push({at:new Date().toISOString(),title:"Submission outcome uncertain",detail:f.blocker});});
+    // Without a run ID no agent was started, so the case must not stay locked behind its action ID.
+    await update(f=>{if(sawComplete)return;f.streamingUrl=undefined;f.blocker=safeError(e);if(f.runId){f.requestStatus="unknown";f.timeline.push({at:new Date().toISOString(),title:"Submission outcome uncertain",detail:f.blocker});}else{f.requestStatus="failed";f.actionId=undefined;f.timeline.push({at:new Date().toISOString(),title:"Submission did not start",detail:`${f.blocker} You can prepare the request again.`});}}).catch(()=>{});
   }
 }
 export async function reconcile(env:AppEnv,owner:string,scanId:string,caseId:string) {

@@ -1,15 +1,20 @@
 import { z } from "zod";
-import type { Scan, Subject, Finding, RequestPayload } from "../shared/types";
+import type { Scan, Subject, RequestPayload } from "../shared/types";
 import { getRecord,insertRecord,listRecords,mutateRecord,type AppEnv } from "./store";
 import { discover } from "./discovery";
 import { prepare,runRemoval,reconcile } from "./removal";
 import { verify } from "./verification";
 import { cancelRun,closeSession,safeError } from "./tinyfish";
 import { publicUrl } from "./matching";
+import { reapStale } from "./stale";
 
 export const DEMO_SUBJECT:Subject={name:"Alex Morgan",email:"alex.morgan@example.com",phone:"+1 202 555 0147",employer:"Northstar Studio",location:"San Francisco"};
 const subjectSchema=z.object({name:z.string().trim().min(2).max(120),email:z.string().trim().email().max(200),phone:z.string().trim().max(40).optional(),employer:z.string().trim().max(150).optional(),location:z.string().trim().max(150).optional(),linkedin:z.string().trim().max(500).optional(),knownUrl:z.string().trim().max(1500).optional()});
 const json=(data:unknown,status=200,headers:Record<string,string>={})=>new Response(JSON.stringify(data),{status,headers:{"Content-Type":"application/json","Cache-Control":"no-store",...headers}});
+const LINKEDIN=/^https:\/\/([\w-]+\.)?linkedin\.com\//i;
+const displayName=(request:Request)=>{const encoded=request.headers.get("oai-authenticated-user-full-name");if(encoded&&request.headers.get("oai-authenticated-user-full-name-encoding")==="percent-encoded-utf-8")try{return decodeURIComponent(encoded);}catch{}return request.headers.get("oai-authenticated-user-email");};
+// Repairs scans whose worker stopped mid-stream so they stop blocking new scans and polling.
+async function freshScans(env:AppEnv,owner:string){const scans=await listRecords<Scan>(env,owner,"scan");return Promise.all(scans.map(async s=>reapStale(s)?mutateRecord<Scan>(env,s.id,owner,d=>{reapStale(d);}).catch(()=>s):s));}
 const escape=(s:string)=>s.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]!));
 const frame=(title:string,body:string)=>`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escape(title)}</title><style>body{font:16px/1.7 system-ui;background:#f5f3ee;color:#263a32;margin:0;padding:8vw}main{max-width:650px;margin:auto;background:white;padding:40px;border-radius:20px;border:1px solid #deded4}label{display:block;margin:20px 0}input{display:block;width:90%;padding:14px;border:1px solid #b7c6b8;border-radius:8px}button{background:#315f47;color:white;border:0;padding:15px 28px;border-radius:10px;font-size:16px}small{color:#718377}</style></head><body><main>${body}</main></body></html>`;
 
@@ -37,43 +42,45 @@ export async function handleApi(request:Request,env:AppEnv):Promise<Response|nul
   try {
     if(request.method!=="GET"&&request.headers.get("origin")&&request.headers.get("origin")!==url.origin) return json({error:"Cross-origin actions are not allowed."},403,headers);
     if(request.method!=="GET"&&request.method!=="DELETE"&&!request.headers.get("content-type")?.includes("application/json"))return json({error:"Use a JSON request."},415,headers);
-    if(url.pathname==="/api/session"&&request.method==="GET")return json({signedIn:!!signedUser,name:request.headers.get("oai-authenticated-user-full-name")?decodeURIComponent(request.headers.get("oai-authenticated-user-full-name")!):request.headers.get("oai-authenticated-user-email"),configured:!!env.TINYFISH_API_KEY,canRunDemo:true,scans:await listRecords<Scan>(env,owner,"scan")},200,headers);
+    if(url.pathname==="/api/session"&&request.method==="GET")return json({signedIn:!!signedUser,name:displayName(request),configured:!!env.TINYFISH_API_KEY,canRunDemo:true,scans:await freshScans(env,owner)},200,headers);
     if(url.pathname==="/api/session/data"&&request.method==="DELETE") {
-      const scans=await listRecords<Scan>(env,owner,"scan");
+      const scans=await freshScans(env,owner);
       if(scans.some(s=>s.status==="running"||s.findings.some(f=>f.requestStatus==="submitting")))throw new Error("Wait for active operations to finish or cancel them before clearing data.");
       for(const scan of scans)for(const f of scan.findings)if(f.browserSessionId)await closeSession(env,f.browserSessionId);
-      if(env.BUCKET){const list=await env.BUCKET.list({prefix:`${owner}/`});if(list.objects.length)await env.BUCKET.delete(list.objects.map(x=>x.key));}
+      if(env.BUCKET){let cursor:string|undefined;do{const list=await env.BUCKET.list({prefix:`${owner}/`,cursor});if(list.objects.length)await env.BUCKET.delete(list.objects.map(x=>x.key));cursor=list.truncated?list.cursor:undefined;}while(cursor);}
       await env.DB!.prepare("DELETE FROM records WHERE owner=?").bind(owner).run();return json({cleared:true},200,headers);
     }
     if(url.pathname==="/api/scans"&&request.method==="POST") {
       const input=z.object({demo:z.boolean().default(false),consent:z.literal(true),subject:subjectSchema.optional()}).parse(await request.json());
       if(!input.demo&&!signedUser)return json({error:"Sign in to check your own information. Public demo uses invented details only."},401,headers);
       if(!env.TINYFISH_API_KEY)return json({error:"Configure TINYFISH_API_KEY on the server before starting a scan."},503,headers);
-      const previous=await listRecords<Scan>(env,owner,"scan");
+      const previous=await freshScans(env,owner);
       if(previous.some(s=>s.status==="running"))throw new Error("A scan is already running. Wait for it to finish.");
       const today=new Date().toISOString().slice(0,10);const total=await env.DB!.prepare("SELECT COUNT(*) AS count FROM records WHERE kind='scan' AND created_at >= ?").bind(today).first<{count:number}>();
       if((total?.count||0)>=50||previous.filter(s=>s.createdAt.startsWith(today)).length>=5)return json({error:"Demo allowance reached for today. Saved cases remain available."},429,headers);
-      const subject=input.demo?DEMO_SUBJECT:input.subject;if(!subject)throw new Error("Personal details are required.");
+      const subject=input.demo?{...DEMO_SUBJECT}:input.subject;if(!subject)throw new Error("Personal details are required.");
       if(subject.knownUrl)subject.knownUrl=publicUrl(subject.knownUrl);
-      if(subject.linkedin&&!/^https:\/\/(www\.)?linkedin\.com\//i.test(subject.linkedin))throw new Error("Use a valid LinkedIn profile URL.");
+      if(subject.linkedin&&!LINKEDIN.test(subject.linkedin))throw new Error("Use a valid LinkedIn profile URL.");
       const scan:Scan={id:crypto.randomUUID(),subject,demo:input.demo,createdAt:new Date().toISOString(),consentAt:new Date().toISOString(),status:"running",checks:[{source:"google",status:"waiting",detail:"Ready to search your name on Google."},{source:"web",status:"waiting",detail:"Ready to investigate public pages."},{source:"scribd",status:"waiting",detail:"Ready to inspect accessible documents."},{source:"easyleadz",status:"waiting",detail:"Ready to find professional listings."},{source:"hibp",status:"waiting",detail:"Ready to check historical breaches."}],findings:[],breaches:[],hibpMode:input.demo?"demo_browser":"browser"};
       await insertRecord(env,scan.id,owner,"scan",scan);
       return streamResponse(headers,async emit=>{emit(scan);try{await discover(env,owner,scan,env.PUBLIC_ORIGIN||url.origin,emit);}catch(e){const updated=await mutateRecord<Scan>(env,scan.id,owner,s=>{s.status="partial";for(const c of s.checks)if(c.status==="waiting"||c.status==="running"){c.status="incomplete";c.detail=safeError(e);}});emit(updated);}});
     }
-    const scanMatch=url.pathname.match(/^\/api\/scans\/([\w-]+)$/);if(scanMatch&&request.method==="GET"){const record=await getRecord<Scan>(env,scanMatch[1],owner);return record?json(record.data,200,headers):json({error:"Not found."},404,headers);}
+    const scanMatch=url.pathname.match(/^\/api\/scans\/([\w-]+)$/);if(scanMatch&&request.method==="GET"){const record=await getRecord<Scan>(env,scanMatch[1],owner);if(!record)return json({error:"Not found."},404,headers);return json(reapStale(record.data)?await mutateRecord<Scan>(env,record.id,owner,d=>{reapStale(d);}):record.data,200,headers);}
     const caseMatch=url.pathname.match(/^\/api\/cases\/([\w-]+)\/([\w-]+)\/(confirm|prepare|submit|verify|cancel|reconcile|screenshot|cleanup)$/);
     if(!caseMatch)return json({error:"Not found."},404,headers);
     const [,scanId,caseId,action]=caseMatch;const record=await getRecord<Scan>(env,scanId,owner);const finding=record?.data.findings.find(f=>f.id===caseId);
     if(!record||!finding)return json({error:"Not found."},404,headers);
     if(action==="screenshot"&&request.method==="GET") {if(!finding.screenshotId||!env.BUCKET)return json({error:"Screenshot not available."},404,headers);const obj=await env.BUCKET.get(`${owner}/${finding.screenshotId}.jpg`);return obj?new Response(obj.body,{headers:{"Content-Type":"image/jpeg","Cache-Control":"private, no-store",...headers}}):json({error:"Not found."},404,headers);}
     if(request.method!=="POST")return json({error:"Method not allowed."},405,headers);
-    const input=await request.json() as Record<string,unknown>;
-    if(action==="confirm") {if(finding.requestStatus==="submitting")throw new Error("An action is already running.");return json(await mutateRecord<Scan>(env,scanId,owner,s=>{const f=s.findings.find(f=>f.id===caseId)!;f.matchStatus=input.confirmed===true?"confirmed":"dismissed";f.timeline.push({at:new Date().toISOString(),title:input.confirmed===true?"Match confirmed by you":"Finding dismissed"});}),200,headers);}
+    const input=(await request.json().catch(()=>({}))??{}) as Record<string,unknown>;
+    if(action==="confirm") {if(finding.requestStatus==="submitting")throw new Error("An action is already running.");const next=input.reset===true?"possible":input.confirmed===true?"confirmed":"dismissed";return json(await mutateRecord<Scan>(env,scanId,owner,s=>{const f=s.findings.find(f=>f.id===caseId)!;f.matchStatus=next;f.timeline.push({at:new Date().toISOString(),title:next==="possible"?"Finding reopened for review":next==="confirmed"?"Match confirmed by you":"Finding dismissed"});}),200,headers);}
     if(action==="prepare") {
       if(finding.destinationPending)throw new Error("Resolve the destination first: open this Google result, then use Check again or scan its direct URL.");
       if(finding.matchStatus!=="confirmed")throw new Error("Confirm the finding first.");
-      if(finding.actionId)throw new Error("A submission already exists. Check its outcome before preparing another.");
-      return json(await mutateRecord<Scan>(env,scanId,owner,s=>{const f=s.findings.find(f=>f.id===caseId)!;f.payload=prepare(s,f,env.PUBLIC_ORIGIN||url.origin);f.requestStatus="prepared";f.timeline.push({at:new Date().toISOString(),title:"Request prepared",detail:"Review the destination and fields before approving."});}),200,headers);
+      // A failed or blocked run has a known outcome with nothing submitted, so it may be retried.
+      const retry=finding.requestStatus==="failed"||finding.requestStatus==="action_required";
+      if(finding.actionId&&!retry)throw new Error("A submission already exists. Check its outcome before preparing another.");
+      return json(await mutateRecord<Scan>(env,scanId,owner,s=>{const f=s.findings.find(f=>f.id===caseId)!;if(retry)Object.assign(f,{actionId:undefined,runId:undefined,approvedAt:undefined,confirmation:undefined,blocker:undefined});f.payload=prepare(s,f,env.PUBLIC_ORIGIN||url.origin);f.requestStatus="prepared";f.timeline.push({at:new Date().toISOString(),title:retry?"Request prepared again":"Request prepared",detail:"Review the destination and fields before approving."});}),200,headers);
     }
     if(action==="submit") {
       if(finding.actionId)return json(record.data,200,headers);
@@ -82,7 +89,7 @@ export async function handleApi(request:Request,env:AppEnv):Promise<Response|nul
       if(!["easyleadz","demo"].includes(finding.source))throw new Error("This source requires a manual reporting handoff.");
       const active=record.data.findings.filter(f=>f.requestStatus==="submitting");if(active.length>=2)throw new Error("Two Agent tasks are already active.");
       const p=z.object({name:z.string().trim().min(2).max(120),email:z.string().email(),phone:z.string().max(40),linkedin:z.string().max(500),profileUrl:z.string().max(1500)}).parse(input.payload);
-      if(finding.source==="easyleadz"&&!/^https:\/\/(www\.)?linkedin\.com\//i.test(p.linkedin))throw new Error("EasyLeadz requires your LinkedIn profile URL.");
+      if(finding.source==="easyleadz"&&!LINKEDIN.test(p.linkedin))throw new Error("EasyLeadz requires your LinkedIn profile URL.");
       if(p.profileUrl!==finding.sourceUrl)throw new Error("The request must refer to this confirmed exposure.");
       if(record.data.demo&&(p.name!==DEMO_SUBJECT.name||p.email!==DEMO_SUBJECT.email))throw new Error("The public demonstration uses the fixed synthetic identity.");
       const payload:RequestPayload={...finding.payload,...p};
