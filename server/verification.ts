@@ -6,12 +6,15 @@ import { isGoogleRedirect } from "./google-results";
 
 class CDP {
   socket:WebSocket; id=0; sessionId?:string;
+  // CDP results are loosely typed JSON; callers read the fields they need.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   pending=new Map<number,{resolve:(v:any)=>void;reject:(e:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
   constructor(socket:WebSocket) {
     this.socket=socket;
-    socket.addEventListener("message",event=>{try {const msg=JSON.parse(String(event.data));const p=this.pending.get(msg.id);if(!p)return;clearTimeout(p.timer);this.pending.delete(msg.id);msg.error?p.reject(new Error(msg.error.message)):p.resolve(msg.result);}catch{}});
+    socket.addEventListener("message",event=>{try {const msg=JSON.parse(String(event.data));const p=this.pending.get(msg.id);if(!p)return;clearTimeout(p.timer);this.pending.delete(msg.id);if(msg.error)p.reject(new Error(msg.error.message));else p.resolve(msg.result);}catch{}});
     socket.addEventListener("close",()=>{for(const p of this.pending.values()){clearTimeout(p.timer);p.reject(new Error("The browser connection closed."));}this.pending.clear();});
   }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   send(method:string,params:Record<string,unknown>={},target=true):Promise<any> {
     const id=++this.id;
     return new Promise((resolve,reject)=>{const timer=setTimeout(()=>{this.pending.delete(id);reject(new Error("Browser command timed out."));},15000);this.pending.set(id,{resolve,reject,timer});this.socket.send(JSON.stringify({id,method,params,...(target&&this.sessionId?{sessionId:this.sessionId}:{})}));});

@@ -22,7 +22,7 @@ Runtime variables: `TINYFISH_API_KEY` and `PUBLIC_ORIGIN`. TinyFish Agent enters
 
 ## Build
 
-Use Node 22.13 or newer. Run `npm install`, `npx tsc --noEmit`, and `npm run build`. Start local development with `npm run dev`. Database migration is in `drizzle/`. Deployment uses the Sites manifest at `.openai/hosting.json`.
+Use Node 22.13 or newer. Run `npm install`, `npx tsc --noEmit`, and `npm run build`. Logic checks run without network access: `node --experimental-strip-types scripts/check-<name>.mjs` for `matching`, `google`, `hibp` and `stale`. Start local development with `npm run dev`. Database migration is in `drizzle/`. Deployment uses the Sites manifest at `.openai/hosting.json`.
 
 ---
 

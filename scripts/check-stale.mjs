@@ -1,0 +1,10 @@
+import assert from 'node:assert/strict';
+import {reapStale,STALE_AFTER_MS} from '../server/stale.ts';
+const t0=Date.parse('2026-01-01T00:00:00Z');
+const scan=(over={})=>({id:'s',subject:{name:'Alex Morgan',email:'a@example.com'},demo:true,createdAt:new Date(t0).toISOString(),consentAt:'',status:'running',checks:[{source:'google',status:'checked',detail:''},{source:'hibp',status:'running',detail:''}],findings:[],breaches:[],hibpMode:'demo_browser',...over});
+const fresh=scan();assert.equal(reapStale(fresh,t0+60000),false);assert.equal(fresh.status,'running');
+const stuck=scan();assert.equal(reapStale(stuck,t0+STALE_AFTER_MS+1),true);assert.equal(stuck.status,'partial');assert.equal(stuck.checks[1].status,'incomplete');assert.equal(stuck.checks[0].status,'checked');
+const finding=(over)=>({id:'f',timeline:[{at:new Date(t0).toISOString(),title:'Submission approved'}],requestStatus:'submitting',actionId:'a',matchStatus:'confirmed',...over});
+const withRun=scan({status:'complete',findings:[finding({runId:'r'})]});reapStale(withRun,t0+STALE_AFTER_MS+1);assert.equal(withRun.findings[0].requestStatus,'unknown');assert.equal(withRun.findings[0].actionId,'a');
+const noRun=scan({status:'complete',findings:[finding({})]});reapStale(noRun,t0+STALE_AFTER_MS+1);assert.equal(noRun.findings[0].requestStatus,'failed');assert.equal(noRun.findings[0].actionId,undefined);
+console.log('PASS: fresh scans untouched, interrupted scans and submissions released, uncertain runs kept reconcilable.');
